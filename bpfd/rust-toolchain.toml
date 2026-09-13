@@ -1,0 +1,20 @@
+# Pinned, rather than "nightly", so this always matches a specific LLVM
+# major version. Building the eBPF crate links against LLVM via `bpf-linker`,
+# and LLVM's bitcode format isn't stable across major versions — if the
+# nightly rustc you build with and the LLVM `bpf-linker` was built against
+# disagree, linking fails with an opaque "ERROR llvm: Invalid record".
+#
+# This date was chosen because it bundles LLVM 22.1.8, matching Arch's
+# `extra/bpf-linker` package (built against `llvm-libs`, also 22.1.x) as of
+# 2026-09. If a `pacman -Syu` ever bumps `bpf-linker`/`llvm-libs` to a new
+# LLVM major version, re-pin this file to match:
+#
+#   ldd $(which bpf-linker) | grep libLLVM                     # see what bpf-linker needs
+#   rustc +nightly-2026-07-01 --version --verbose | grep LLVM  # see what a candidate nightly bundles
+#
+# ...bisecting nightly dates (they update LLVM every few months) until they
+# match, then update both this file and the `Toolchain::Custom(...)` string
+# in omablinker-bpfd/build.rs to the same date.
+[toolchain]
+channel = "nightly-2026-07-01"
+components = ["rust-src"]

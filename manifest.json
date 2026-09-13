@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "id": "jayosays.omablinker",
+  "name": "OmaBlinker",
+  "version": "1.0.0",
+  "author": "Jay O",
+  "license": "MIT",
+  "description": "A blinking amber-red drive-activity LED for the Omarchy bar, lit by real block-layer I/O events captured with an eBPF tracepoint program — just like the activity LED on an old PC tower.",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "OmaBlinker",
+    "description": "Blinks whenever the kernel block layer reports disk I/O.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "idleTimeoutMs": 120
+    },
+    "schema": [
+      {
+        "key": "idleTimeoutMs",
+        "type": "integer",
+        "label": "Hold time after activity (ms)",
+        "min": 40,
+        "max": 2000,
+        "step": 20,
+        "defaultValue": 120
+      }
+    ]
+  }
+}

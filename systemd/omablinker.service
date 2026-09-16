@@ -1,6 +1,6 @@
 [Unit]
 Description=omablinker block I/O activity monitor (eBPF)
-Documentation=https://github.com/jayo/omablinker
+Documentation=https://github.com/jayosays/omablinker
 After=multi-user.target
 
 [Service]

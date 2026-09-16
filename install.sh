@@ -72,4 +72,4 @@ echo
 echo "Useful commands:"
 echo "  systemctl status omablinker"
 echo "  journalctl -u omablinker -f"
-echo "  cat /run/omablinker/pulses.log   # raw pulse stream"
+echo "  cat /run/omablinker/state        # current state: 0 (idle) or 1 (active)"

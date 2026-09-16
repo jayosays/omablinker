@@ -1,7 +1,5 @@
 # OmaBlinker
 
-![](preview.png)
-
 A third-party [Omarchy](https://omarchy.org) Quattro shell plugin that adds
 a small LED to the bar and blinks it whenever the kernel reports storage
 activity — the on-screen equivalent of the red/amber drive-activity LED on
@@ -10,8 +8,10 @@ machine *does* have a spare, software-controllable LED under
 `/sys/class/leds/`, OmaBlinker can drive that too, in lockstep with the
 on-screen one.
 
-Click the LED to open a settings popup: LED shape (square/circle), color
-(red/amber), and blink style (an instant snap or a brief fade).
+Click the LED to open a settings popup: a single combined LED (default) or
+independent green-for-read / red-for-write LEDs, shape (square/circle),
+color (for the combined LED), and blink style (an instant snap or a brief
+fade).
 
 ## How it works
 
@@ -25,27 +25,71 @@ completion, independent of filesystem or which disk it lands on. Each
 tracepoint hit just increments a per-CPU counter in a BPF map; there's no
 per-request syscall or write in the kernel-side hot path.
 
+For the Read/Write display mode, each event is also classified by reading
+the tracepoint's `rwbs` field — the same field `biosnoop`/`biotop` read
+from these exact tracepoints for their R/W column — bumping one of two
+counters instead of one. Reading a tracepoint field means reading raw bytes
+at a fixed offset into its argument buffer, which isn't exposed through BTF
+the way kprobe arguments are, so the eBPF program mirrors the relevant
+prefix of the kernel's own `TP_STRUCT__entry` layout (from the current
+[`block.h`](https://github.com/torvalds/linux/blob/master/include/trace/events/block.h))
+in a `#[repr(C)]` struct and lets `core::mem::offset_of!` compute the real
+offset, rather than hand-deriving or hardcoding a number. See the comment
+above `BlockRqEntryPrefix` in `omablinker-bpfd-ebpf/src/main.rs` for the
+full derivation and, if it's ever wrong on a given kernel, how to fix it.
+(Verified against a real `/sys/kernel/tracing/events/block/block_rq_issue/format`
+— the computed offset matched exactly.)
+
+Only a **cache miss** reaches these tracepoints for a read — the kernel
+serves a cached read entirely from RAM without ever touching the block
+layer, so opening the same file twice only lights the read LED the first
+time. Writes don't get the same reprieve: dirty pages, filesystem
+journaling, and `fsync` all eventually have to reach the block layer
+regardless of caching. In practice this means the write LED tends to fire
+far more often than the read one during ordinary use — that's real,
+expected behavior, not a bug, and it's easy to confirm directly by forcing
+an uncached read and watching the LEDs respond:
+
+```
+sudo dd if=/dev/<your-drive> of=/dev/null bs=1M count=500 iflag=direct
+```
+
+(`lsblk` to find `<your-drive>`, e.g. `nvme0n1` or `sda`. `iflag=direct`
+bypasses the page cache entirely, guaranteeing real block-layer reads. This
+only *reads* the drive and discards the result to `/dev/null` — nothing on
+it is touched or modified.) The read LED should light up for the duration
+of the command; opening a file you haven't touched recently (so it's cold
+from cache) does the same thing more organically.
+
 Loading a BPF program needs root, which the desktop shell process doesn't
 have and shouldn't be given, so the plugin is split into a privileged
 daemon and an unprivileged widget that only talk through a plain,
-world-readable log file — no sockets, no D-Bus, no capabilities handed to
-the shell process:
+world-readable state file — no sockets, no D-Bus, no capabilities handed
+to the shell process, and no subprocess on either side of that handoff:
+the daemon overwrites the file in place, and the widget watches it
+natively with Quickshell's `FileView`:
 
 ```
  root, via systemd               your desktop session, via Omarchy
 ┌────────────────────────┐       ┌──────────────────────────────────┐
 │ omablinker-bpfd (Rust) │       │ Service.qml   (kind: service)    │
-│  - loads the eBPF      │       │  - tail -F's the pulse log       │
-│    program (Aya)       │       │  - debounces into active/idle    │
+│  - loads the eBPF      │       │  - watches state via             │
+│    program (Aya)       │       │    FileView, no subprocess       │
 │  - polls a per-CPU     │──────▶│                                  │
 │    counter map ~50/s   │ world-│ BarWidget.qml (kind: bar-widget) │
-│  - writes pulses to    │ file  │  - draws the LED, reflects       │
+│  - overwrites          │ file  │  - draws the LED, reflects       │
 │    /run/omablinker/    │       │    Service's active state        │
-│    pulses.log          │       │                                  │
+│    state in place      │       │                                  │
 │  - optionally blinks   │       └──────────────────────────────────┘
 │    a real sysfs LED    │
 └────────────────────────┘
 ```
+
+Neither side ever shells out to run an external command: the widget reads
+and writes its own settings the same way, via `FileView`, rather than
+`bash -c` snippets — no bare executable names resolved through an
+inherited `PATH`, nothing that could be hijacked by a malicious binary
+earlier on that `PATH`.
 
 `omablinker-bpfd` is a single ~1.7 MB, single-threaded, dynamically-linked
 binary (only glibc/libgcc — no Python, no embedded clang/LLVM, no async
@@ -120,23 +164,43 @@ it yourself if you want it gone too.
 
 Click the LED to open its settings popup:
 
+- **Activity** — `Combined` (default) is a single LED for all block I/O,
+  exactly like the daemon's original design. `Read/Write` shows two LEDs
+  instead — green on the left for reads, red on the right for writes —
+  since the daemon already classifies every event by direction (see
+  [How it works](#how-it-works)). Green + red was also the other ubiquitous
+  vintage-PC LED pairing (power + activity), though it wasn't historically
+  used to distinguish read from write.
 - **LED shape** — `Square` (default) is the boxy drive-activity LED common
-  on PC front panels. `Circle` is a classic round 5 mm LED.
+  on PC front panels. `Circle` is a classic round 5 mm LED. Applies to
+  every LED regardless of Activity mode.
 - **LED color** — `Red` (default) is a saturated red-orange close to the
   5 mm red LEDs used on most beige-box drive lights. `Amber` is the
   orange-yellow tone common on 386/486-era cases (often shared with the
-  turbo-mode light on the same front panel).
+  turbo-mode light on the same front panel). Only shown in `Combined` mode
+  — `Read/Write` mode's colors are fixed, not a style choice.
+- **Show (R)ead / (W)rite Labels** — only shown in `Read/Write` mode:
+  prints a small "R"/"W" on each LED, appearing and disappearing in sync
+  with it — lit only while that LED is, not a permanent label — for
+  telling them apart without relying on color at all while activity is
+  happening. Red/green is the single most common form of color blindness,
+  so this exists specifically for that case, off by default to keep the
+  plain look.
 - **Blink style** — `Abrupt` (default) snaps the LED on and off instantly,
   matching how a real drive-activity LED flashes. `Fade` eases it in
   quickly and lets it linger a little on the way out, for a softer look.
 
 These are stored in `~/.config/omablinker/widget-prefs.json`, managed
-entirely by the popup rather than through `manifest.json`'s settings
-schema — as of this writing, nothing in Omarchy's shell renders a settings
-form from that schema yet, so a schema-only setting has no UI to change it
-from. `idleTimeoutMs` (how long the LED stays lit after the last event,
-default `120`ms) is one such setting; change it by adding it directly to
-the widget's entry in `~/.config/omarchy/shell.json`.
+entirely by the popup — there's no separate `manifest.json` settings
+schema for appearance at all, since as of this writing nothing in
+Omarchy's shell renders a settings form from that schema yet, so a
+schema-only setting would have no UI to change it from.
+
+The LED's on-screen widget doesn't have its own independent hold-time
+setting either, deliberately: it mirrors the daemon's state directly
+(see [How it works](#how-it-works)), so there's exactly one place that
+decides how long a burst of activity stays visible — the daemon's own
+`OMABLINKER_IDLE_MS`, below.
 
 ## Configuring the daemon
 
@@ -144,10 +208,10 @@ Optional settings for `omablinker-bpfd` live in `/etc/omablinker.env` (see
 `systemd/omablinker.env.example`), and take effect after
 `sudo systemctl restart omablinker`:
 
-| Key                     | Default | Meaning                                              |
-|-------------------------|---------|-------------------------------------------------------|
-| `OMABLINKER_LED_DEVICE` | (unset) | sysfs brightness path of a real LED to blink as well  |
-| `OMABLINKER_IDLE_MS`    | `120`   | Same idea as `idleTimeoutMs`, for the physical LED    |
+| Key                     | Default | Meaning                                                    |
+|-------------------------|---------|-------------------------------------------------------------|
+| `OMABLINKER_LED_DEVICE` | (unset) | sysfs brightness path of a real LED to blink as well        |
+| `OMABLINKER_IDLE_MS`    | `120`   | How long a burst of activity stays "active" after the last event, for both the on-screen and any physical LED |
 
 Find real LED candidates with `ls /sys/class/leds/`.
 
@@ -156,12 +220,14 @@ Find real LED candidates with `ls /sys/class/leds/`.
 ```
 systemctl status omablinker       # is the daemon running?
 journalctl -u omablinker -f       # attach errors, LED device errors, etc.
-cat /run/omablinker/pulses.log    # should print a fresh "1"/"0" line per burst
+cat /run/omablinker/state         # combined state: 0 (idle) or 1 (active)
+cat /run/omablinker/state-read    # read-only state
+cat /run/omablinker/state-write   # write-only state
 ```
 
 If the widget's tooltip says the service isn't running, that's
-`Service.qml` reporting that its `tail -F` on the pulse log has nothing to
-follow — check the daemon first.
+`Service.qml` reporting that the state file doesn't exist yet — check the
+daemon first.
 
 ## Development
 
@@ -172,9 +238,11 @@ cargo run -- --led-device /sys/class/leds/foo/brightness   # runs via `sudo -E`,
 ```
 
 `omablinker-bpfd-ebpf/src/main.rs` is the whole BPF program — two
-`#[tracepoint]` functions and one `PerCpuArray` map. `omablinker-bpfd/src/main.rs`
-is the whole daemon: load, attach, poll, write the pulse log, optionally
-drive a real LED, clean up on `SIGTERM`.
+`#[tracepoint]` functions, a per-event read/write classifier, and a
+2-entry `PerCpuArray` map. `omablinker-bpfd/src/main.rs` is the whole
+daemon: load, attach, poll, run three independent activity/idle state
+machines (`Channel`) — combined, read, write — overwrite their state
+files, optionally drive a real LED (combined only), clean up on `SIGTERM`.
 
 Before publishing changes, Omarchy's own plugin guidance applies here too:
 

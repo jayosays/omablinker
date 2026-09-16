@@ -1,5 +1,7 @@
 # OmaBlinker
 
+![](preview.png)
+
 A third-party [Omarchy](https://omarchy.org) Quattro shell plugin that adds
 a small LED to the bar and blinks it whenever the kernel reports storage
 activity — the on-screen equivalent of the red/amber drive-activity LED on

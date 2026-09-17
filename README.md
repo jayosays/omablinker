@@ -133,6 +133,9 @@ cd ~/.config/omarchy/plugins/jayosays.omablinker
 3. Installs the binary and a systemd **system** service for it to run as
    root — it prints exactly what it's about to do first, so read it before
    running, the same way you'd read any third-party plugin before enabling it.
+4. Enables the plugin (if it isn't already) and restarts the Omarchy shell
+   to activate it — the same enable-then-restart sequence `plugin add
+   --enable` does for you, for when this step happens on its own.
 
 Working from a local clone instead (for development, or before pushing
 anywhere)? Run the same script from wherever you cloned it — it also
@@ -143,13 +146,7 @@ itself in that case:
 git clone <this repo> ~/code/omablinker
 cd ~/code/omablinker
 ./install.sh
-omarchy plugin enable jayosays.omablinker
-omarchy restart shell
 ```
-
-(`install.sh` already restarts the shell at the end, but the plugin isn't
-enabled yet at that point in this flow, so it takes a second restart after
-`plugin enable` to actually activate it.)
 
 After enabling it, add the widget to a bar section from *Setup > Plugins*
 (or edit `~/.config/omarchy/shell.json` directly — see `defaultSection` in

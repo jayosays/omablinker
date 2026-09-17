@@ -18,7 +18,7 @@ echo "  1. Install rustup and bpf-linker if either is missing."
 echo "  2. Build the eBPF daemon (Rust/Aya)."
 echo "  3. Install it and a systemd system service to $BIN_DEST (needs sudo)."
 echo "  4. Link this checkout into $PLUGIN_LINK so Omarchy can find it."
-echo "  5. Restart the Omarchy shell to activate the plugin."
+echo "  5. Enable the plugin and restart the Omarchy shell to activate it."
 echo
 
 if ! command -v cargo >/dev/null 2>&1 || ! command -v bpf-linker >/dev/null 2>&1; then
@@ -28,14 +28,6 @@ fi
 
 echo "Building omablinker-bpfd (release)..."
 ( cd "$BPFD_DIR" && cargo build --release )
-
-# Leftovers from earlier names this project used, if this is an upgrade:
-# the original Python/BCC prototype, and the Rust daemon's previous name
-# (omahddact) before the project was renamed to omablinker.
-sudo rm -f /usr/local/bin/omahddact-bpfd.py
-sudo systemctl disable --now omahddact.service 2>/dev/null || true
-sudo rm -f /usr/local/bin/omahddact-bpfd /etc/systemd/system/omahddact.service
-rm -f "$HOME/.config/omarchy/plugins/jayo.omahddact"
 
 sudo install -Dm755 "$BPFD_DIR/target/release/omablinker-bpfd" "$BIN_DEST"
 sudo install -Dm644 "$PLUGIN_DIR/systemd/omablinker.service" "$UNIT_DEST"
@@ -66,9 +58,24 @@ echo
 echo "Daemon status:"
 systemctl --no-pager status omablinker.service || true
 echo
-echo "Now enable the widget itself:"
-echo "  omarchy plugin enable $PLUGIN_ID"
-echo "Then add it to a bar section from Setup > Plugins, or edit shell.json directly."
+echo "Enabling the plugin..."
+omarchy-shell shell rescanPlugins >/dev/null
+# Mirrors the discovery poll `omarchy plugin add --enable` does itself: a
+# freshly-linked plugin dir isn't picked up by the running shell instantly.
+discovered=0
+for (( attempt = 0; attempt < 40; attempt++ )); do
+  if omarchy plugin list --json | jq -e --arg id "$PLUGIN_ID" 'any(.[]; .id == $id)' >/dev/null; then
+    discovered=1
+    break
+  fi
+  sleep 0.05
+done
+if (( discovered )); then
+  omarchy plugin enable "$PLUGIN_ID"
+else
+  echo "warning: plugin not discovered yet; enable it yourself with: omarchy plugin enable $PLUGIN_ID" >&2
+fi
+echo "Add it to a bar section from Setup > Plugins, or edit shell.json directly."
 echo
 echo "Useful commands:"
 echo "  systemctl status omablinker"

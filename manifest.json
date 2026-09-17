@@ -5,7 +5,7 @@
   "version": "1.0.0",
   "author": "Jay O",
   "license": "MIT",
-  "description": "A blinking drive-activity LED for the Omarchy bar, lit by real block-layer I/O events captured with an eBPF tracepoint program — just like the activity LED on an old PC tower. Optionally splits into independent green/red read and write LEDs.",
+  "description": "A blinking drive-activity LED for the Omarchy bar, lit by real block-layer I/O events captured with an eBPF tracepoint program — just like the activity LED on an old PC tower. Optionally splits into independent green/red read and write LEDs. After installing and enabling this plugin, see its README to complete setup.",
   "kinds": [
     "service",
     "bar-widget"

@@ -144,7 +144,12 @@ git clone <this repo> ~/code/omablinker
 cd ~/code/omablinker
 ./install.sh
 omarchy plugin enable jayosays.omablinker
+omarchy restart shell
 ```
+
+(`install.sh` already restarts the shell at the end, but the plugin isn't
+enabled yet at that point in this flow, so it takes a second restart after
+`plugin enable` to actually activate it.)
 
 After enabling it, add the widget to a bar section from *Setup > Plugins*
 (or edit `~/.config/omarchy/shell.json` directly — see `defaultSection` in

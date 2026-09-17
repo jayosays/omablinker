@@ -18,6 +18,7 @@ echo "  1. Install rustup and bpf-linker if either is missing."
 echo "  2. Build the eBPF daemon (Rust/Aya)."
 echo "  3. Install it and a systemd system service to $BIN_DEST (needs sudo)."
 echo "  4. Link this checkout into $PLUGIN_LINK so Omarchy can find it."
+echo "  5. Restart the Omarchy shell to activate the plugin."
 echo
 
 if ! command -v cargo >/dev/null 2>&1 || ! command -v bpf-linker >/dev/null 2>&1; then
@@ -73,3 +74,6 @@ echo "Useful commands:"
 echo "  systemctl status omablinker"
 echo "  journalctl -u omablinker -f"
 echo "  cat /run/omablinker/state        # current state: 0 (idle) or 1 (active)"
+echo
+echo "Restarting the Omarchy shell to activate the plugin..."
+omarchy restart shell

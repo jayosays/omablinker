@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
-# Reverses install.sh: stops and removes the system service and daemon
-# binary, and unlinks the plugin from Omarchy's plugin directory.
-# /etc/omablinker.env is left in place in case you reinstall later.
+# Reverses install.sh: disables the widget, stops and removes the system
+# service and daemon binary, unlinks the plugin from Omarchy's plugin
+# directory, and restarts the shell so the disabled widget actually
+# disappears. /etc/omablinker.env is left in place in case you reinstall
+# later.
 set -euo pipefail
 
 PLUGIN_ID="jayosays.omablinker"
 PLUGIN_LINK="$HOME/.config/omarchy/plugins/$PLUGIN_ID"
+
+# Best-effort: fails if the widget was never enabled (e.g. install.sh ran
+# but the widget was never turned on), which shouldn't abort the rest of
+# the cleanup below.
+omarchy plugin disable "$PLUGIN_ID" 2>/dev/null || true
 
 sudo systemctl disable --now omablinker.service 2>/dev/null || true
 sudo rm -f /etc/systemd/system/omablinker.service
@@ -17,7 +24,8 @@ if [ -L "$PLUGIN_LINK" ]; then
   echo "Removed $PLUGIN_LINK"
 fi
 
-echo "omablinker system service and binary removed."
-echo "If the widget is still enabled in ~/.config/omarchy/shell.json, run:"
-echo "  omarchy plugin disable $PLUGIN_ID"
+echo "omablinker disabled, and its system service and binary removed."
 echo "/etc/omablinker.env was left in place; delete it manually if you want it gone too."
+
+echo "Restarting the Omarchy shell..."
+omarchy restart shell

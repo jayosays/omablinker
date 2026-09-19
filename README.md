@@ -194,8 +194,10 @@ After enabling it, add the widget to a bar section from *Setup > Plugins*
 omarchy plugin remove jayosays.omablinker
 ```
 
-`uninstall.sh` stops and removes the systemd service and the daemon binary,
-and unlinks the plugin from `~/.config/omarchy/plugins/`.
+`uninstall.sh` disables the widget, stops and removes the systemd service
+and the daemon binary, unlinks the plugin from
+`~/.config/omarchy/plugins/`, and restarts the shell so the disabled
+widget actually disappears.
 `/etc/omablinker.env` is left in place in case you reinstall later; delete
 it yourself if you want it gone too.
 

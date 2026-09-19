@@ -4,14 +4,17 @@ import Quickshell.Io
 import qs.Ui
 import qs.Commons
 
-// LED(s) in the bar. In "Combined" mode (default), a single LED lights up
-// whenever the omablinker eBPF service reports any block-layer I/O. In
-// "Read/Write" mode, two LEDs track reads and writes independently — green
-// on the left for reads, red on the right for writes. Either way, idle
-// LEDs turn fully transparent — like an actual unlit LED, showing whatever
-// is behind the bar — and blink either as an instant snap (the "Abrupt"
-// default, matching how a real drive-activity LED flashes) or a brief
-// fade (the "Fade" option). Click to open OmaBlinker's settings popup.
+// LED(s) in the bar, one of three Mode choices. "Combined" (default): a
+// single LED for all activity — direct reads, cache-hit reads, and writes
+// alike. "Read/Write": two LEDs, green for reads (direct or cache hit, both
+// folded together) on the left and red for writes on the right. "Cache
+// Hit/Read/Write": three LEDs — blue for cache-hit reads, green narrowed to
+// direct (block-layer) reads only, red for writes — splitting out the one
+// distinction the other two modes fold away. Idle LEDs turn fully
+// transparent — like an actual unlit LED, showing whatever is behind the
+// bar — and blink either as an instant snap (the "Instant" default, matching
+// how a real drive-activity LED flashes) or a brief fade (the "Fade"
+// option). Click to open OmaBlinker's settings popup.
 BarWidget {
   id: root
   moduleName: "jayosays.omablinker"
@@ -27,12 +30,14 @@ BarWidget {
   readonly property string prefsPath: (Quickshell.env("HOME") || "") + "/.config/omablinker/widget-prefs.json"
   property string ledShape: "Square"
   property string colorScheme: "Red"
-  property string blinkStyle: "Abrupt"
-  // "Combined": one LED for all block I/O, matching the daemon's original
-  // behavior. "Read/Write": two LEDs, tracking each direction the daemon
-  // already classifies independently (see bpfd/omablinker-bpfd-ebpf).
+  property string blinkStyle: "Instant"
+  // "Combined": one LED for everything. "Read/Write": two LEDs (green
+  // folds in cache hits, red for writes). "Cache Hit/Read/Write": three
+  // LEDs, splitting cache-hit reads onto their own blue LED and narrowing
+  // green to direct reads only. See dualMode/cacheMode below.
   property string activityMode: "Combined"
-  // Only meaningful (and only shown in the popup) in Read/Write mode.
+  // Meaningful (and shown in the popup) whenever a letter-bearing LED —
+  // read/write (dualMode) or cache-hit (cacheMode) — is on screen.
   property bool inscribeLetters: false
   property bool popupOpen: false
 
@@ -56,8 +61,8 @@ BarWidget {
       var data = JSON.parse(text)
       if (data.ledShape === "Square" || data.ledShape === "Circle") root.ledShape = data.ledShape
       if (data.colorScheme === "Red" || data.colorScheme === "Amber") root.colorScheme = data.colorScheme
-      if (data.blinkStyle === "Abrupt" || data.blinkStyle === "Fade") root.blinkStyle = data.blinkStyle
-      if (data.activityMode === "Combined" || data.activityMode === "Read/Write") root.activityMode = data.activityMode
+      if (data.blinkStyle === "Instant" || data.blinkStyle === "Fade") root.blinkStyle = data.blinkStyle
+      if (["Combined", "Read/Write", "Cache Hit/Read/Write"].includes(data.activityMode)) root.activityMode = data.activityMode
       if (typeof data.inscribeLetters === "boolean") root.inscribeLetters = data.inscribeLetters
     } catch (e) {
       // No prefs file yet, or it's malformed — the defaults above stand.
@@ -86,13 +91,14 @@ BarWidget {
 
   // Square: the boxy drive-activity LEDs common on PC front panels.
   // Circle: a classic round 5mm LED. Applies to every LED regardless of
-  // Activity mode.
+  // Mode.
   readonly property bool circle: ledShape === "Circle"
 
   // Red: the classic 5mm LED on most beige-box drive lights. Amber: the
   // orange tone common on 386/486-era cases (often shared with the turbo
-  // button light). Only used in Combined mode — Read/Write mode's colors
-  // are fixed (see readColor/writeColor below), not a style choice.
+  // button light). Only used in Combined mode — the other two modes' LED
+  // colors are fixed (see readColor/writeColor/cacheReadColor below), not
+  // a style choice.
   readonly property var colorPresets: ({
     "Red": "#ff2400",
     "Amber": "#ffb000"
@@ -100,31 +106,51 @@ BarWidget {
   readonly property color onColor: colorPresets[colorScheme] || colorPresets["Red"]
 
   // Fixed, not user-selectable: green-for-read/red-for-write is a
-  // deliberate, accessibility-motivated convention (see the popup's
-  // Activity option), not a stylistic pick like Combined mode's color.
+  // deliberate, accessibility-motivated convention (see the popup's Mode
+  // option), not a stylistic pick like Combined mode's color.
   // Both colors were also the two most common LED colors on vintage PC
   // front panels (green power + red/amber activity), so the pairing stays
   // in period even though it wasn't historically used for read vs write.
   readonly property color readColor: "#33cc33"
   readonly property color writeColor: "#ff2400"
 
-  // Abrupt: no animation, the LED snaps on/off like a real one.
+  // Fixed, not user-selectable, like readColor/writeColor above — a
+  // distinct hue so it never reads as a third read/write LED at a glance.
+  readonly property color cacheReadColor: "#3b82f6"
+
+  // Instant: no animation, the LED snaps on/off like a real one.
   // Fade: a quick ramp up and a slower, lingering fall off.
   readonly property bool abrupt: blinkStyle !== "Fade"
   readonly property int rampUpMs: abrupt ? 0 : 15
   readonly property int rampDownMs: abrupt ? 0 : 200
   readonly property int haloMs: abrupt ? 0 : 150
 
+  readonly property bool combinedMode: activityMode === "Combined"
   readonly property bool dualMode: activityMode === "Read/Write"
-  readonly property bool combinedActive: hddService ? hddService.combinedActive : false
+  readonly property bool cacheMode: activityMode === "Cache Hit/Read/Write"
   readonly property bool readActive: hddService ? hddService.readActive : false
   readonly property bool writeActive: hddService ? hddService.writeActive : false
+  readonly property bool cacheReadActive: hddService ? hddService.cacheReadActive : false
+
+  // What the green LED actually shows: outside Cache Hit/Read/Write mode,
+  // green stands in for "any read" — direct or cached — so Combined and
+  // Read/Write modes never need to know cache hits exist at all. Cache
+  // Hit/Read/Write mode splits cache hits back out onto blue, so green
+  // narrows to direct (block-layer) reads only.
+  readonly property bool readIndicatorActive: root.cacheMode
+    ? root.readActive
+    : (root.readActive || root.cacheReadActive)
+
+  // What the single Combined-mode LED shows: direct reads, cache-hit
+  // reads, and writes all folded into one, matching that mode's whole
+  // premise of not distinguishing activity by kind at all.
+  readonly property bool combinedIndicatorActive: root.readActive || root.writeActive || root.cacheReadActive
 
   readonly property string statusText: {
     if (!hddService || !hddService.daemonSeen) return qsTr("Starting HDD activity light…")
-    if (!root.dualMode) return root.combinedActive ? qsTr("Storage activity") : qsTr("Idle")
-    if (root.readActive && root.writeActive) return qsTr("Read + write activity")
-    if (root.readActive) return qsTr("Read activity")
+    if (root.combinedMode) return root.combinedIndicatorActive ? qsTr("Storage activity") : qsTr("Idle")
+    if (root.readIndicatorActive && root.writeActive) return qsTr("Read + write activity")
+    if (root.readIndicatorActive) return qsTr("Read activity")
     if (root.writeActive) return qsTr("Write activity")
     return qsTr("Idle")
   }
@@ -138,9 +164,9 @@ BarWidget {
     spacing: Style.space(4)
 
     LedIndicator {
-      visible: !root.dualMode
+      visible: root.combinedMode
       ledColor: root.onColor
-      active: root.combinedActive
+      active: root.combinedIndicatorActive
       circle: root.circle
       rampUpMs: root.rampUpMs
       rampDownMs: root.rampDownMs
@@ -148,9 +174,20 @@ BarWidget {
     }
 
     LedIndicator {
-      visible: root.dualMode
+      visible: root.cacheMode
+      ledColor: root.cacheReadColor
+      active: root.cacheReadActive
+      circle: root.circle
+      rampUpMs: root.rampUpMs
+      rampDownMs: root.rampDownMs
+      haloMs: root.haloMs
+      inscribeChar: root.inscribeLetters ? "C" : ""
+    }
+
+    LedIndicator {
+      visible: root.dualMode || root.cacheMode
       ledColor: root.readColor
-      active: root.readActive
+      active: root.readIndicatorActive
       circle: root.circle
       rampUpMs: root.rampUpMs
       rampDownMs: root.rampDownMs
@@ -159,7 +196,7 @@ BarWidget {
     }
 
     LedIndicator {
-      visible: root.dualMode
+      visible: root.dualMode || root.cacheMode
       ledColor: root.writeColor
       active: root.writeActive
       circle: root.circle
@@ -200,8 +237,8 @@ BarWidget {
 
         // md-harddisk (U+F02CA) — same Material Design Icons set as the
         // rest of the shell's glyph icons. Tinted with the Combined-mode
-        // color, since there's no single "the LED" color once Read/Write
-        // mode is active.
+        // color, since there's no single "the LED" color once either
+        // multi-LED mode is active.
         iconComponent: Component {
           Item {
             implicitWidth: Style.space(34)
@@ -223,8 +260,8 @@ BarWidget {
       }
 
       OptionGroup {
-        title: qsTr("Activity")
-        options: ["Combined", "Read/Write"]
+        title: qsTr("Mode")
+        options: ["Combined", "Read/Write", "Cache Hit/Read/Write"]
         current: root.activityMode
         onPicked: function(value) { root.activityMode = value; root.writePrefs() }
       }
@@ -240,20 +277,21 @@ BarWidget {
         onPicked: function(value) { root.ledShape = value; root.writePrefs() }
       }
 
-      // LED color and "Inscribe letters" are mutually exclusive: color is
-      // a style choice that only applies to the single Combined-mode LED,
-      // and the inscribed letters only make sense once there are two
-      // fixed-color LEDs to tell apart. Each option group's own separator
-      // is paired with it so hiding one never leaves two separators
-      // sitting next to each other with nothing between them.
+      // LED color only applies to the single Combined-mode LED, so it's
+      // hidden in either multi-LED mode. I/O labels are the opposite:
+      // irrelevant for that same single Combined LED (nothing to tell
+      // apart), but relevant in both multi-LED modes. The two are never
+      // both visible at once (Combined is mutually exclusive with the
+      // other two), but each option group still keeps its own paired
+      // separator for clarity.
 
       PanelSeparator {
-        visible: !root.dualMode
+        visible: root.combinedMode
         foreground: root.bar ? root.bar.foreground : Color.foreground
       }
 
       OptionGroup {
-        visible: !root.dualMode
+        visible: root.combinedMode
         title: qsTr("LED color")
         options: ["Red", "Amber"]
         current: root.colorScheme
@@ -261,13 +299,13 @@ BarWidget {
       }
 
       PanelSeparator {
-        visible: root.dualMode
+        visible: root.dualMode || root.cacheMode
         foreground: root.bar ? root.bar.foreground : Color.foreground
       }
 
       OptionGroup {
-        visible: root.dualMode
-        title: qsTr("Show (R)ead / (W)rite Labels")
+        visible: root.dualMode || root.cacheMode
+        title: qsTr("Show I/O Labels")
         options: ["Off", "On"]
         current: root.inscribeLetters ? "On" : "Off"
         onPicked: function(value) { root.inscribeLetters = value === "On"; root.writePrefs() }
@@ -279,7 +317,7 @@ BarWidget {
 
       OptionGroup {
         title: qsTr("Blink style")
-        options: ["Abrupt", "Fade"]
+        options: ["Instant", "Fade"]
         current: root.blinkStyle
         onPicked: function(value) { root.blinkStyle = value; root.writePrefs() }
       }
@@ -393,7 +431,14 @@ BarWidget {
       font.letterSpacing: 1.2
     }
 
-    Row {
+    // Flow, not Row: most option groups' choices (Off/On, Square/Circle)
+    // fit on one line at the popup's normal width, but Mode's longest
+    // choice ("Cache Hit/Read/Write") doesn't fit alongside the other two.
+    // Flow wraps only the groups that need it rather than widening the
+    // whole popup — and therefore every other group's row of short
+    // buttons — just to fit one long label.
+    Flow {
+      width: group.width
       spacing: Style.space(6)
 
       Repeater {

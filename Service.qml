@@ -6,10 +6,10 @@ import Quickshell.Io
 // omarchy-shell process, so the actual tracepoint work happens in the
 // privileged omablinker-bpfd systemd service (see bpfd/omablinker-bpfd).
 // This watches the world-readable state files that daemon overwrites in
-// place — one for combined activity, one each for read and write — and
-// exposes each directly as a boolean. BarWidget.qml decides which of these
-// to actually display, based on its own "Activity" (Combined/Read-Write)
-// setting.
+// place — one for combined activity, one each for read and write, and an
+// optional fourth for cache-read pulses — and exposes each directly as a
+// boolean. BarWidget.qml decides which of these to actually display, based
+// on its own "Activity" (Combined/Read-Write) and "Cache-read LED" settings.
 Item {
   id: root
 
@@ -57,6 +57,22 @@ Item {
   }
   readonly property string rawWrite: writeFile.text()
   readonly property bool writeActive: daemonSeen && rawWrite.trim() === "1"
+
+  // Only exists if the daemon's cache-read kprobe attached (best-effort,
+  // see omablinker-bpfd/src/main.rs) — a missing file just leaves
+  // cacheReadActive false via onLoadFailed, same as any other absent state.
+  FileView {
+    id: cacheReadFile
+    path: root.stateDir + "/state-cache-read"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoadFailed: root.cacheReadSeen = false
+  }
+  readonly property string rawCacheRead: cacheReadFile.text()
+  onRawCacheReadChanged: root.cacheReadSeen = true
+  property bool cacheReadSeen: false
+  readonly property bool cacheReadActive: cacheReadSeen && rawCacheRead.trim() === "1"
 
   readonly property string statusText: daemonSeen
     ? qsTr("Watching block I/O")

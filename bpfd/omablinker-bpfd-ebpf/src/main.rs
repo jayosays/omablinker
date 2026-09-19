@@ -1,18 +1,25 @@
 #![no_std]
 #![no_main]
 
-use aya_ebpf::{macros::map, macros::tracepoint, maps::PerCpuArray, programs::TracePointContext};
+use aya_ebpf::{
+    macros::{kprobe, map, tracepoint},
+    maps::PerCpuArray,
+    programs::{ProbeContext, TracePointContext},
+};
 
 /// Per-CPU counters: `[READ_INDEX]` counts read requests, `[WRITE_INDEX]`
 /// counts everything else (writes, flushes, discards, zone management —
-/// anything that isn't a plain read). "Combined" activity for the
-/// single-LED mode is just read + write summed in userspace; there's no
-/// need for a third counter here.
+/// anything that isn't a plain read), and `[CACHE_INDEX]` counts page-cache
+/// accesses (see `folio_mark_accessed` below). "Combined" activity for the
+/// single-LED mode is just read + write summed in userspace; cache accesses
+/// are deliberately excluded from that sum (see `folio_mark_accessed`'s doc
+/// comment).
 #[map]
-static ACTIVITY: PerCpuArray<u64> = PerCpuArray::<u64>::with_max_entries(2, 0);
+static ACTIVITY: PerCpuArray<u64> = PerCpuArray::<u64>::with_max_entries(3, 0);
 
 const READ_INDEX: u32 = 0;
 const WRITE_INDEX: u32 = 1;
+const CACHE_INDEX: u32 = 2;
 
 #[inline(always)]
 fn bump(index: u32) {
@@ -97,6 +104,33 @@ pub fn block_rq_issue(ctx: TracePointContext) -> u32 {
 #[tracepoint]
 pub fn block_rq_complete(ctx: TracePointContext) -> u32 {
     bump(classify(&ctx));
+    0
+}
+
+/// Fires on every page-cache access — a cache *hit* never reaches
+/// `block_rq_issue`/`block_rq_complete` above at all, that's the entire
+/// point of the cache, so it needs its own signal rather than being folded
+/// into `READ_INDEX`. BCC's `cachestat` hooks the older, page-based
+/// `mark_page_accessed` for this, but on a folio-converted kernel (6.1+)
+/// that's only a thin compatibility wrapper for callers that still hand it
+/// a `page` rather than a `folio` — the buffered-read hot path
+/// (`filemap_read`/`generic_file_buffered_read`) already has a folio in
+/// hand and calls `folio_mark_accessed` directly, never going through that
+/// wrapper at all. Hooking `mark_page_accessed` attaches without error
+/// (it's a real, traceable symbol) but silently never fires on an ordinary
+/// cached read — this hooks the folio version instead, the one actually on
+/// that hot path.
+///
+/// Unlike the two tracepoints above, this is a kprobe on an ordinary kernel
+/// function rather than the stable tracepoint ABI, and it fires far more
+/// often — every cached read touches it, not just ones that reach the block
+/// layer — so the daemon treats a failed attach here as non-fatal and
+/// treats the resulting counter as a coarse "the cache is busy" pulse, not
+/// a precise per-request signal (see `PulseChannel` in
+/// `omablinker-bpfd/src/main.rs`).
+#[kprobe]
+pub fn folio_mark_accessed(_ctx: ProbeContext) -> u32 {
+    bump(CACHE_INDEX);
     0
 }
 

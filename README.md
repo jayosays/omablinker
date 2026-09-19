@@ -10,10 +10,13 @@ machine *does* have a spare, software-controllable LED under
 `/sys/class/leds/`, OmaBlinker can drive that too, in lockstep with the
 on-screen one.
 
-Click the LED to open a settings popup: a single combined LED (default) or
-independent green-for-read / red-for-write LEDs, shape (square/circle),
-color (for the combined LED), and blink style (an instant snap or a brief
-fade).
+Click the LED to open a settings popup: a Mode setting picks a single
+combined LED (default), independent green-for-read / red-for-write LEDs,
+or those two plus a third blue LED that splits cache-hit reads out on
+their own (see
+[The cache-hit read LED](#the-cache-hit-read-led)) — plus shape
+(square/circle), color (for the combined LED), and blink style (an instant
+snap or a brief fade).
 
 ## How it works
 
@@ -62,6 +65,38 @@ only *reads* the drive and discards the result to `/dev/null` — nothing on
 it is touched or modified.) The read LED should light up for the duration
 of the command; opening a file you haven't touched recently (so it's cold
 from cache) does the same thing more organically.
+
+### The cache-hit read LED
+
+Picking `Cache Hit/Read/Write` as the Mode (see
+[Appearance](#appearance)) adds a third, blue LED that splits cache *hits*
+out from the green Read LED onto their own indicator, rather than leaving
+them folded silently into "any read" the way `Combined` and `Read/Write`
+both do. The row reorders left to right as blue (cache hit), green (direct
+read only, once split out), red (write), and adds a "C" label alongside
+the existing "R"/"W" ones if **Show I/O Labels** is on. It's fed by a
+kprobe on `folio_mark_accessed`, the function on the
+buffered-read hot path (`filemap_read`/`generic_file_buffered_read`) that
+marks a page-cache folio as recently used — the folio-based counterpart to
+the older page-based `mark_page_accessed` BCC's `cachestat` hooks for the
+same purpose; on a folio-converted kernel (6.1+), that older function is only a
+thin compatibility wrapper that the read path itself never actually calls,
+so hooking it would attach cleanly but silently never fire. This is a
+different, less stable kind of hook than the two tracepoints above (an
+ordinary kernel function rather than the tracepoint ABI), so the daemon
+attaches it best-effort: if it fails on a given kernel, cache-read tracking
+is silently disabled and the rest of OmaBlinker works exactly as before.
+
+It also fires *far* more often than real block I/O — a cache hit is the
+entire point of not reaching the block layer — so it isn't wired up like
+the other LEDs, which mirror real event timing. Mirrored 1:1, this LED
+would just read as solid-on, not blinking, on any non-idle machine.
+Instead it checks in every 400ms and, if there was any cache-read activity
+at all since the last check, blinks once for 120ms — a heartbeat that says
+"the cache is busy," not a precise per-request signal. This is deliberate:
+OmaBlinker is a vibes-based activity light, not a profiling tool, and a
+literal rendering of real cache-hit *volume* would be useless as a blinking
+indicator anyway (see `PulseChannel` in `omablinker-bpfd/src/main.rs`).
 
 Loading a BPF program needs root, which the desktop shell process doesn't
 have and shouldn't be given, so the plugin is split into a privileged
@@ -168,31 +203,39 @@ it yourself if you want it gone too.
 
 Click the LED to open its settings popup:
 
-- **Activity** — `Combined` (default) is a single LED for all block I/O,
-  exactly like the daemon's original design. `Read/Write` shows two LEDs
-  instead — green on the left for reads, red on the right for writes —
-  since the daemon already classifies every event by direction (see
-  [How it works](#how-it-works)). Green + red was also the other ubiquitous
-  vintage-PC LED pairing (power + activity), though it wasn't historically
-  used to distinguish read from write.
+- **Mode** — `Combined` (default) is a single LED for all block I/O,
+  direct reads, cache-hit reads, and writes alike, exactly like the
+  daemon's original design. `Read/Write` shows two LEDs instead — green on
+  the left, red on the right — since the daemon already classifies every
+  event by direction (see [How it works](#how-it-works)); green still
+  covers *any* read here, cache hit or not, so this mode never shows blue.
+  `Cache Hit/Read/Write` adds that third, blue LED, splitting cache hits
+  back out of green so it narrows to direct (block-layer) reads only (see
+  [The cache-hit read LED](#the-cache-hit-read-led)) — stays off and inert
+  if the daemon's cache-read kprobe didn't attach on this kernel. Green +
+  red was also the other ubiquitous vintage-PC LED pairing (power +
+  activity), though it wasn't historically used to distinguish read from
+  write, and blue never existed on a real drive light at all.
 - **LED shape** — `Square` (default) is the boxy drive-activity LED common
   on PC front panels. `Circle` is a classic round 5 mm LED. Applies to
-  every LED regardless of Activity mode.
+  every LED regardless of Mode.
 - **LED color** — `Red` (default) is a saturated red-orange close to the
   5 mm red LEDs used on most beige-box drive lights. `Amber` is the
   orange-yellow tone common on 386/486-era cases (often shared with the
   turbo-mode light on the same front panel). Only shown in `Combined` mode
-  — `Read/Write` mode's colors are fixed, not a style choice.
-- **Show (R)ead / (W)rite Labels** — only shown in `Read/Write` mode:
-  prints a small "R"/"W" on each LED, appearing and disappearing in sync
-  with it — lit only while that LED is, not a permanent label — for
-  telling them apart without relying on color at all while activity is
-  happening. Red/green is the single most common form of color blindness,
-  so this exists specifically for that case, off by default to keep the
-  plain look.
-- **Blink style** — `Abrupt` (default) snaps the LED on and off instantly,
-  matching how a real drive-activity LED flashes. `Fade` eases it in
-  quickly and lets it linger a little on the way out, for a softer look.
+  — the other two modes' colors are fixed, not a style choice.
+- **Show I/O Labels** — shown in either multi-LED mode (`Read/Write` or
+  `Cache Hit/Read/Write`), hidden in `Combined`: prints a small
+  "R"/"W"/"C" on each LED, appearing and disappearing in sync with it —
+  lit only while that LED is, not a permanent label — for telling them
+  apart without relying on color at all while activity is happening.
+  Red/green is the single most common form of color blindness, so this
+  exists specifically for that case, off by default to keep the plain
+  look.
+- **Blink style** — `Instant` (default) snaps the LED on and off
+  instantly, matching how a real drive-activity LED flashes. `Fade` eases
+  it in quickly and lets it linger a little on the way out, for a softer
+  look.
 
 These are stored in `~/.config/omablinker/widget-prefs.json`, managed
 entirely by the popup — there's no separate `manifest.json` settings
@@ -200,11 +243,14 @@ schema for appearance at all, since as of this writing nothing in
 Omarchy's shell renders a settings form from that schema yet, so a
 schema-only setting would have no UI to change it from.
 
-The LED's on-screen widget doesn't have its own independent hold-time
-setting either, deliberately: it mirrors the daemon's state directly
-(see [How it works](#how-it-works)), so there's exactly one place that
-decides how long a burst of activity stays visible — the daemon's own
-`OMABLINKER_IDLE_MS`, below.
+The read/write/combined LEDs don't have their own independent hold-time
+setting, deliberately: they mirror the daemon's state directly (see
+[How it works](#how-it-works)), so there's exactly one place that decides
+how long a burst of activity stays visible — the daemon's own
+`OMABLINKER_IDLE_MS`, below. The cache-hit LED is the one exception: its
+pulse cadence is fixed in the daemon's `PulseChannel`, not configurable via
+`OMABLINKER_IDLE_MS` or anything else, since it isn't tracking a hold time
+at all (see [The cache-hit read LED](#the-cache-hit-read-led)).
 
 ## Configuring the daemon
 
@@ -224,9 +270,10 @@ Find real LED candidates with `ls /sys/class/leds/`.
 ```
 systemctl status omablinker       # is the daemon running?
 journalctl -u omablinker -f       # attach errors, LED device errors, etc.
-cat /run/omablinker/state         # combined state: 0 (idle) or 1 (active)
-cat /run/omablinker/state-read    # read-only state
-cat /run/omablinker/state-write   # write-only state
+cat /run/omablinker/state             # combined state: 0 (idle) or 1 (active)
+cat /run/omablinker/state-read        # read-only state
+cat /run/omablinker/state-write       # write-only state
+cat /run/omablinker/state-cache-read  # cache-read pulse; only exists if the kprobe attached
 ```
 
 If the widget's tooltip says the service isn't running, that's
@@ -242,10 +289,12 @@ cargo run -- --led-device /sys/class/leds/foo/brightness   # runs via `sudo -E`,
 ```
 
 `omablinker-bpfd-ebpf/src/main.rs` is the whole BPF program — two
-`#[tracepoint]` functions, a per-event read/write classifier, and a
-2-entry `PerCpuArray` map. `omablinker-bpfd/src/main.rs` is the whole
-daemon: load, attach, poll, run three independent activity/idle state
-machines (`Channel`) — combined, read, write — overwrite their state
+`#[tracepoint]` functions, a `#[kprobe]` for the optional cache-read signal,
+a per-event read/write classifier, and a 3-entry `PerCpuArray` map.
+`omablinker-bpfd/src/main.rs` is the whole daemon: load, attach (the kprobe
+best-effort), poll, run three independent event-timed activity/idle state
+machines (`Channel`) — combined, read, write — plus an optional fourth,
+fixed-cadence one (`PulseChannel`) for cache reads, overwrite their state
 files, optionally drive a real LED (combined only), clean up on `SIGTERM`.
 
 Before publishing changes, Omarchy's own plugin guidance applies here too:

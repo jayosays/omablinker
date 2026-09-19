@@ -12,7 +12,10 @@ use std::{
 };
 
 use anyhow::Context as _;
-use aya::{maps::PerCpuArray, programs::TracePoint};
+use aya::{
+    maps::PerCpuArray,
+    programs::{KProbe, TracePoint},
+};
 use clap::Parser;
 use log::{debug, info, warn};
 
@@ -23,7 +26,9 @@ use log::{debug, info, warn};
 /// uses) and mirrors storage activity into small world-readable state files
 /// the plugin's bar widget watches natively, plus optionally a real sysfs
 /// LED. Reads and writes are tracked as two independent channels, plus a
-/// combined one for the single-LED display mode — see `Channel`.
+/// combined one for the single-LED display mode — see `Channel`. A fourth,
+/// optional channel tracks page-cache reads via a best-effort kprobe — see
+/// `PulseChannel`.
 #[derive(Debug, Parser)]
 struct Opt {
     /// Optional sysfs LED brightness path to blink in lockstep with the
@@ -172,6 +177,76 @@ impl Channel {
     }
 }
 
+/// The cache-read channel's state machine — deliberately not a `Channel`.
+/// Page-cache accesses fire far more often than block I/O (see
+/// `folio_mark_accessed`'s doc comment in the eBPF program): mirroring every
+/// counter change 1:1 the way `Channel` does would leave this LED lit
+/// almost solid rather than blinking, since on any non-idle machine the
+/// counter is essentially always moving. Instead this checks in on a fixed
+/// cadence (`CACHE_PULSE_PERIOD`) and, if there was *any* cache-read
+/// activity since the last check, blinks once for a fixed duration
+/// (`CACHE_PULSE_ON`) regardless of how much activity there actually was —
+/// a heartbeat that says "the cache is busy," not a precise meter.
+struct PulseChannel {
+    state_file: StateFile,
+    baseline_total: u64,
+    seeded: bool,
+    active: bool,
+    next_check_at: Instant,
+    pulse_off_at: Instant,
+}
+
+const CACHE_PULSE_PERIOD: Duration = Duration::from_millis(400);
+const CACHE_PULSE_ON: Duration = Duration::from_millis(120);
+
+impl PulseChannel {
+    fn open(path: &Path) -> anyhow::Result<Self> {
+        let now = Instant::now();
+        Ok(Self {
+            state_file: StateFile::open(path)?,
+            baseline_total: 0,
+            seeded: false,
+            active: false,
+            next_check_at: now,
+            pulse_off_at: now,
+        })
+    }
+
+    fn tick(&mut self, total: u64, now: Instant) {
+        if !self.seeded {
+            self.baseline_total = total;
+            self.seeded = true;
+            self.next_check_at = now + CACHE_PULSE_PERIOD;
+            return;
+        }
+
+        if self.active {
+            if now >= self.pulse_off_at {
+                self.active = false;
+                self.state_file.set(false);
+            }
+            return;
+        }
+
+        if now >= self.next_check_at {
+            if total != self.baseline_total {
+                self.active = true;
+                self.state_file.set(true);
+                self.pulse_off_at = now + CACHE_PULSE_ON;
+            }
+            self.baseline_total = total;
+            self.next_check_at = now + CACHE_PULSE_PERIOD;
+        }
+    }
+
+    fn shutdown(&mut self) {
+        if self.active {
+            self.active = false;
+            self.state_file.set(false);
+        }
+    }
+}
+
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 fn main() -> anyhow::Result<()> {
@@ -211,6 +286,26 @@ fn main() -> anyhow::Result<()> {
     }
     info!("attached to block:block_rq_issue and block:block_rq_complete");
 
+    // Best-effort: `folio_mark_accessed` is an ordinary kernel function, not
+    // the stable tracepoint ABI the two probes above use, so it can't be
+    // relied on to exist under that exact name on every kernel. A failed
+    // attach here just disables cache-read tracking rather than the whole
+    // daemon — the core read/write functionality doesn't depend on it.
+    let cache_kprobe_attached = (|| -> anyhow::Result<()> {
+        let program: &mut KProbe = ebpf
+            .program_mut("folio_mark_accessed")
+            .context("program folio_mark_accessed not found in the compiled eBPF object")?
+            .try_into()?;
+        program.load()?;
+        program.attach("folio_mark_accessed", 0)?;
+        Ok(())
+    })()
+    .map_err(|e| warn!("cache-read tracking disabled: {e:#}"))
+    .is_ok();
+    if cache_kprobe_attached {
+        info!("attached to kprobe:folio_mark_accessed");
+    }
+
     let activity: PerCpuArray<_, u64> =
         PerCpuArray::try_from(ebpf.map("ACTIVITY").context("ACTIVITY map missing")?)?;
 
@@ -222,6 +317,11 @@ fn main() -> anyhow::Result<()> {
     let mut combined = Channel::open(&opt.state_log)?;
     let mut read = Channel::open(&state_dir.join("state-read"))?;
     let mut write = Channel::open(&state_dir.join("state-write"))?;
+    let mut cache_read = if cache_kprobe_attached {
+        Some(PulseChannel::open(&state_dir.join("state-cache-read"))?)
+    } else {
+        None
+    };
 
     let mut led = match &opt.led_device {
         Some(path) => match Led::open(path) {
@@ -238,10 +338,15 @@ fn main() -> anyhow::Result<()> {
     };
 
     info!(
-        "watching block I/O, writing state to {} (combined), {} (read), {} (write)",
+        "watching block I/O, writing state to {} (combined), {} (read), {} (write){}",
         opt.state_log.display(),
         state_dir.join("state-read").display(),
-        state_dir.join("state-write").display()
+        state_dir.join("state-write").display(),
+        if cache_kprobe_attached {
+            format!(", {} (cache-read)", state_dir.join("state-cache-read").display())
+        } else {
+            String::new()
+        }
     );
 
     let idle_window = Duration::from_millis(opt.idle_ms.max(20));
@@ -275,6 +380,11 @@ fn main() -> anyhow::Result<()> {
         write.tick(write_total, idle_window, now);
         combined.tick(read_total + write_total, idle_window, now);
 
+        if let Some(cache_read) = &mut cache_read {
+            let cache_total: u64 = activity.get(&2, 0)?.iter().copied().sum();
+            cache_read.tick(cache_total, now);
+        }
+
         if combined.active != combined_was_active {
             combined_was_active = combined.active;
             if let Some(led) = &mut led {
@@ -287,6 +397,9 @@ fn main() -> anyhow::Result<()> {
     read.shutdown();
     write.shutdown();
     combined.shutdown();
+    if let Some(cache_read) = &mut cache_read {
+        cache_read.shutdown();
+    }
     if let Some(led) = &mut led {
         led.set(false);
     }

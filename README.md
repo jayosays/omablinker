@@ -143,24 +143,37 @@ readable code: `manifest.json` + `Service.qml` + `BarWidget.qml` are the
 whole shell-side plugin, and `bpfd/` is the whole privileged daemon. Nothing
 is obfuscated or fetched at install time.
 
-## Install
+## Install / Upgrade
 
-The normal Omarchy way, once this is listed on the plugin registry (or
-right away, by pointing at this repo directly):
-
-```
-omarchy plugin add https://github.com/jayosays/omablinker.git --enable
-```
-
-That installs and enables the bar widget itself. It doesn't set up the
-privileged eBPF daemon, though — per Omarchy's plugin model, `plugin add`
-never runs anything from a plugin or asks for sudo, so that's a separate,
-explicit step:
+The normal Omarchy way, whether this is a first install or you already
+have it and want the latest version — once this is listed on the plugin
+registry (or right away, by pointing at this repo directly):
 
 ```
-cd ~/.config/omarchy/plugins/jayosays.omablinker
-./install.sh
+( omarchy plugin add https://github.com/jayosays/omablinker.git --enable || omarchy plugin update jayosays.omablinker ) && ~/.config/omarchy/plugins/jayosays.omablinker/install.sh
 ```
+
+`omarchy plugin add` refuses outright — it doesn't clone or touch
+anything — if the plugin id is already installed, so the `||` falls back
+to `omarchy plugin update` in that case, which fast-forwards the existing
+checkout instead (after showing you the incoming diff to confirm, unless
+you pass `--yes`). The `&&` after the parenthesized group only runs
+`install.sh` if *one* of those two actually succeeded — if both `add` and
+`update` fail (declined a prompt, no network, genuinely not installed
+yet, etc.), `install.sh` is skipped entirely rather than also failing on
+its own with a confusing "no such file" error. Neither `add` nor `update`
+ever sets up the privileged eBPF daemon on success, though — per
+Omarchy's plugin model, they never run anything from a plugin or ask for
+sudo — so `install.sh` is always a separate, explicit step, needed after
+a fresh install *and* every update alike. It's also safe to run any
+number of times: it always rebuilds and reinstalls over whatever's
+already there (`systemctl restart`, not `start`, specifically so an
+already-running daemon gets replaced rather than left in place, and its
+own auto-enable is a no-op if already enabled). Skipping it after an
+update is an easy mistake, since the bar widget
+(`BarWidget.qml`/`Service.qml`) hot-reloads on its own the moment the new
+files land — which can make an update look complete even though the
+daemon is still quietly running the old binary underneath.
 
 `install.sh`:
 1. Installs `rustup` and `bpf-linker` if either is missing.
@@ -190,14 +203,18 @@ After enabling it, add the widget to a bar section from *Setup > Plugins*
 ## Uninstall
 
 ```
-./uninstall.sh
-omarchy plugin remove jayosays.omablinker
+~/.config/omarchy/plugins/jayosays.omablinker/uninstall.sh
 ```
 
-`uninstall.sh` disables the widget, stops and removes the systemd service
-and the daemon binary, unlinks the plugin from
-`~/.config/omarchy/plugins/`, and restarts the shell so the disabled
-widget actually disappears.
+`uninstall.sh` disables the widget, removes it from
+`~/.config/omarchy/plugins/` (via `omarchy plugin remove --yes`, which
+handles a symlinked dev checkout, a git-managed clone, or a plain
+directory — whichever this install actually is), stops and removes the
+systemd service and the daemon binary, and restarts the shell so the
+disabled widget actually disappears. It also kills any stray
+`omablinker-bpfd` process left over from a `cargo run` dev-testing
+session (see [Development](#development)), since that one was never
+managed by systemd in the first place.
 `/etc/omablinker.env` is left in place in case you reinstall later; delete
 it yourself if you want it gone too.
 

@@ -320,6 +320,14 @@ fn main() -> anyhow::Result<()> {
     let mut cache_read = if cache_kprobe_attached {
         Some(PulseChannel::open(&state_dir.join("state-cache-read"))?)
     } else {
+        // Unlike the other channels' state files, which StateFile::open
+        // always recreates fresh on every start, this one is only ever
+        // written while the kprobe is attached. Without this, a stale "1"
+        // from an earlier run where it *did* attach (e.g. before a kernel
+        // update stopped it working) would linger forever, leaving the
+        // widget's cache-read LED stuck lit even though this run never
+        // touches the file again.
+        let _ = fs::remove_file(state_dir.join("state-cache-read"));
         None
     };
 

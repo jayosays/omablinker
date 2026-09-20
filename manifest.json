@@ -5,7 +5,7 @@
   "version": "1.1.0",
   "author": "Jay O",
   "license": "MIT",
-  "description": "A blinking drive-activity LED for the Omarchy bar, lit by real block-layer I/O events captured with an eBPF tracepoint program — just like the activity LED on an old PC tower. Optionally splits into a green/red Read/Write pair, or further into a blue/green/red Cache Hit/Read/Write trio. After installing and enabling this plugin, see its README to complete setup.",
+  "description": "A blinking drive-activity LED for the Omarchy bar, lit by real block-layer I/O events captured with an eBPF tracepoint program — just like the activity LED on an old PC tower. Optionally splits into a green/red Read/Write pair, or further into a blue/green/red Cache Hit/Read/Write trio. Run this plugin's install.sh (see its README) after every install, enable, AND update — `omarchy plugin update` alone does not rebuild or reinstall the privileged daemon.",
   "kinds": [
     "service",
     "bar-widget"

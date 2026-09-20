@@ -49,7 +49,18 @@ elif [ ! -e "$PLUGIN_LINK" ]; then
   ln -s "$PLUGIN_DIR" "$PLUGIN_LINK"
   echo "Linked plugin into $PLUGIN_LINK"
 elif [ -L "$PLUGIN_LINK" ]; then
-  echo "$PLUGIN_LINK already links here."
+  # A symlink alone isn't enough — it could point at a stale checkout (e.g.
+  # this repo got moved or re-cloned elsewhere since the last install), in
+  # which case Omarchy would keep silently loading the plugin from that old
+  # path instead of this one. `-n` keeps `ln` from treating an
+  # existing symlink-to-a-directory as the directory itself, which would
+  # otherwise create the new link *inside* it instead of replacing it.
+  if [ "$(readlink -f "$PLUGIN_LINK")" = "$PLUGIN_DIR" ]; then
+    echo "$PLUGIN_LINK already links here."
+  else
+    ln -sfn "$PLUGIN_DIR" "$PLUGIN_LINK"
+    echo "$PLUGIN_LINK pointed elsewhere; relinked it to this checkout."
+  fi
 else
   echo "warning: $PLUGIN_LINK already exists and isn't a symlink to this checkout; leaving it alone." >&2
 fi
